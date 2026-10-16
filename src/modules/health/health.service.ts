@@ -2,7 +2,7 @@
 export class HealthService {
   getHealth() {
     return {
-      status: "unhealthy",
+      status: "healthy",
       application: "Task Management API",
       timestamp: new Date().toISOString(),
       uptime: process.uptime()
