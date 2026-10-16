@@ -17,9 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  # ============================================
+  # JOB 1: Build and Integration Tests
+  # ============================================
   build-and-test:
     name: Build and Integration Tests
-
     runs-on: ubuntu-latest
 
     env:
@@ -49,7 +52,7 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version-file: ".nvmrc"
-        cache: "npm"
+        cache: npm
 
     - name: Install dependencies
       run: npm ci
@@ -68,3 +71,84 @@ jobs:
 
     - name: Run automated tests
       run: npm run test:ci
+
+  # ============================================
+  # JOB 2: Docker Build Verification
+  # ============================================
+  docker-build:
+    name: Docker Build Verification
+    runs-on: ubuntu-latest
+
+    needs:
+    - build-and-test
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        target: runtime
+        push: false
+        tags: task-management-api:ci
+        build-args: |
+          REPOSITORY_URL=https://github.com/${{ github.repository }}
+
+  # ============================================
+  # JOB 3: Publish Docker Image to GHCR
+  # ============================================
+  publish-image:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+
+    needs:
+    - build-and-test
+    - docker-build
+
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Generate Docker image metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository }}
+        tags: |
+          type=raw,value=latest
+          type=sha,format=long,prefix=sha-
+
+    - name: Build and publish image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        target: runtime
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          REPOSITORY_URL=https://github.com/${{ github.repository }}
