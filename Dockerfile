@@ -32,6 +32,10 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
+ARG REPOSITORY_URL
+
+LABEL org.opencontainers.image.source="${REPOSITORY_URL}"
+
 COPY package*.json ./
 
 # Install production dependencies only
