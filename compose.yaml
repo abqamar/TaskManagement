@@ -1,0 +1,346 @@
+
+services:
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - task-network
+
+  migrate:
+    build:
+      context: .
+      target: runtime
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?schema=public
+
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    restart: "no"
+
+    networks:
+      - task-network
+
+  api:
+    build:
+      context: .
+      target: runtime
+
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?schema=public
+
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    networks:
+      - task-network
+
+networks:
+  task-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+```
+
+Docker Compose supports waiting for a service to become healthy and for a one-off migration service to complete successfully before starting dependent services. <Cite ref="turn594579search2"/>
+
+### Understanding our three services
+
+<box gap={2}>
+  <row gap={3} align="start">
+    <box background="surface-secondary" radius="lg" padding={3}>
+      <icon name="database" size="lg"/>
+    </box>
+    <box flex="1" gap={1}>
+      **`db` — PostgreSQL**
+
+      Runs PostgreSQL 17 and stores its data in the `postgres_data` Docker volume. It is not exposed directly to your Mac's network.
+    </box>
+  </row>
+  <divider color="subtle"/>
+  <row gap={3} align="start">
+    <box background="surface-secondary" radius="lg" padding={3}>
+      <icon name="database-zap" size="lg"/>
+    </box>
+    <box flex="1" gap={1}>
+      **`migrate` — Prisma migrations**
+
+      Runs `prisma migrate deploy` after PostgreSQL becomes healthy. It should finish successfully before the API starts.
+    </box>
+  </row>
+  <divider color="subtle"/>
+  <row gap={3} align="start">
+    <box background="surface-secondary" radius="lg" padding={3}>
+      <icon name="server" size="lg"/>
+    </box>
+    <box flex="1" gap={1}>
+      **`api` — Express REST API**
+
+      Runs the compiled TypeScript application on port 3000, connecting to PostgreSQL using the Docker hostname `db`.
+    </box>
+  </row>
+</box>
+
+The configuration is deliberately local-development-focused. We bind the HTTP port to `127.0.0.1`, so it's accessible from your Mac but not publicly exposed on the network. We'll create a separate production deployment configuration later.
+
+---
+
+## 9. Build the Docker image
+
+Before building, stop the Node.js API that's running directly on your Mac using `Ctrl+C` to avoid a port conflict.
+
+Now run:
+
+```bash
+docker compose --env-file .env.docker build
+```
+
+This builds our application image from the Dockerfile.
+
+Docker will:
+
+1. Download the Node.js 24 base image if needed.
+2. Install npm dependencies.
+3. Generate Prisma Client.
+4. Compile the TypeScript project.
+5. Create the runtime image.
+
+This is your first Dockerized Node.js application.
+
+## 10. Start the containers
+
+Run:
+
+```bash
+docker compose --env-file .env.docker up -d
+```
+
+Then inspect the container statuses:
+
+```bash
+docker compose --env-file .env.docker ps -a
+```
+
+Expected states:
+
+| Service | Expected state |
+|---|---|
+| `db` | Running, healthy |
+| `migrate` | Exited successfully (code 0) |
+| `api` | Running, healthy |
+
+A stopped `migrate` container is normal because it is a one-off job.
+
+View the API logs:
+
+```bash
+docker compose --env-file .env.docker logs -f api
+```
+
+You should see output similar to:
+
+```text
+PostgreSQL connected successfully
+===================================
+Task Management API
+Environment: production
+URL: http://localhost:3000
+PostgreSQL: Connected
+===================================
+```
+
+Although the API is in Docker's production runtime mode, this is still a local learning environment, not an internet-facing production deployment.
+
+## 11. Test the Dockerized API
+
+Your same REST API endpoints should work without changing any controller, service, or repository code.
+
+<box border radius="lg" padding={3} gap={2}>
+  <row align="center" justify="between">
+    **Health Check**
+    <badge color="success">GET</badge>
+  </row>
+  `http://localhost:3000/api/v1/health`
+
+  ```bash
+  curl http://localhost:3000/api/v1/health
+  ```
+
+  <divider color="subtle"/>
+  <row align="center" justify="between">
+    **Create Task**
+    <badge color="success">POST</badge>
+  </row>
+  `http://localhost:3000/api/v1/tasks`
+
+  ```bash
+  curl -X POST http://localhost:3000/api/v1/tasks \
+    -H "Content-Type: application/json" \
+    -d '{
+      "title": "Learn Docker Compose",
+      "description": "Run Node.js and PostgreSQL",
+      "priority": "HIGH",
+      "status": "TODO"
+    }'
+  ```
+
+  <divider color="subtle"/>
+  <row align="center" justify="between">
+    **Get Tasks**
+    <badge>GET</badge>
+  </row>
+  `http://localhost:3000/api/v1/tasks`
+
+  ```bash
+  curl http://localhost:3000/api/v1/tasks
+  ```
+</box>
+
+If these calls succeed, your Express API, Prisma Client, PostgreSQL networking, and migrations are working inside Docker.
+
+---
+
+## 12. Learn container management
+
+Now let's practice the Docker commands you'll use regularly.
+
+| Command | Purpose |
+|---|---|
+| `docker ps` | Show running containers |
+| `docker compose ps -a` | Show all project containers |
+| `docker compose logs api` | Show API logs |
+| `docker compose restart api` | Restart the API |
+| `docker compose stop` | Stop services |
+| `docker compose start` | Start existing services |
+| `docker compose down` | Remove project containers and network |
+| `docker images` | List Docker images |
+| `docker volume ls` | List Docker volumes |
+
+For Compose commands, use `--env-file .env.docker` as in our examples.
+
+### Access PostgreSQL inside Docker
+
+Run:
+
+```bash
+docker compose --env-file .env.docker exec db \
+  psql -U taskapp -d task_management
+```
+
+Inside PostgreSQL:
+
+```sql
+SELECT id, title, status FROM "Task";
+```
+
+You should see tasks created through your API.
+
+Exit using `\q`.
+
+### Understand persistent volumes
+
+Run:
+
+```bash
+docker compose --env-file .env.docker down
+```
+
+Then start again:
+
+```bash
+docker compose --env-file .env.docker up -d
+```
+
+Your existing tasks should still be present.
+
+That's because PostgreSQL data is stored in a Docker named volume, which survives ordinary container removal.
+
+<box gap={1}>
+  <row align="center" gap={2}>
+    <icon name="alert-triangle" color="danger"/>
+    **Important: Don't accidentally delete your database**
+  </row>
+  Avoid running `docker compose down -v` unless you intentionally want to delete the project's database volume and its stored data. Docker volumes are not substitutes for database backups.
+</box>
+
+---
+
+## 13. Add Docker build verification to GitHub Actions
+
+Now we'll integrate Docker into the CI pipeline created in Phase 3.
+
+Our current workflow tests Node.js and PostgreSQL successfully. However, it doesn't yet verify that the application can be packaged into a Docker image.
+
+We should test that automatically.
+
+Open:
+
+`.github/workflows/ci.yml`
+
+Under `jobs`, add this second job at the same indentation level as your existing `build-and-test` job:
+
+<CodeBlock language="yaml" editable>
+  docker-build:
+    name: Docker Build Verification
+
+    runs-on: ubuntu-latest
+
+    needs: build-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: false
+          tags: task-management-api:ci
