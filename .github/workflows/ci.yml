@@ -122,6 +122,9 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v7
 
+    - name: Setup QEMU
+      uses: docker/setup-qemu-action@v3
+
     - name: Setup Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -141,14 +144,17 @@ jobs:
           type=raw,value=latest
           type=sha,format=long,prefix=sha-
 
-    - name: Build and publish image
+    - name: Build and publish multi-platform image
       uses: docker/build-push-action@v6
       with:
         context: .
         file: ./Dockerfile
         target: runtime
+        platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           REPOSITORY_URL=https://github.com/${{ github.repository }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
